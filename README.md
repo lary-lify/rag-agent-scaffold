@@ -10,26 +10,38 @@
   - 默认 **FAISS** 本地向量库（零外部服务，开箱即跑）
   - 可一键切换 **SQL + Milvus**：向量存 Milvus、文本/元数据存 SQL，适合大规模生产检索
 - **Agent**：LangGraph ReAct 循环，LLM 自主决定调用 `retrieve` / `calculator` 等工具
+- **多轮记忆**：内置 `MemorySaver` checkpointer，按 `session_id` 串联历史消息（可换 Redis 持久化）
+- **流式输出**：`/api/chat/stream` 以 SSE 逐字返回，聊天体验不掉档
+- **多格式文档**：`loaders.py` 支持 `.txt` / `.md` / `.pdf`，`DATA_DIR` 下递归扫描
+- **服务鉴权**：`X-API-Key` 校验（开发期可关闭）
 - **可编排**：`StateGraph` 显式串联 `agent` / `tools` 节点，便于扩展新节点
 - **多模型**：基于 OpenAI 兼容接口，一行切换 DeepSeek 等国产模型
-- **双入口**：CLI（`python -m rag_agent.cli`）+ FastAPI 服务（`/api/chat`）
+- **双入口**：CLI（`python -m rag_agent.cli`）+ FastAPI 服务（`/api/chat`、`/api/chat/stream`）
+- **代码门禁**：ruff + pre-commit，CI 同步跑 lint + pytest
 
 ## 目录结构
 
 ```
 rag-agent-scaffold/
 ├── rag_agent/
-│   ├── config.py        # 配置（LLM/嵌入/路径）
+│   ├── config.py        # 配置（LLM/嵌入/路径/鉴权）
 │   ├── llm.py           # get_chat_model() / get_embeddings()
 │   ├── retriever.py     # 向量库抽象：build_index()/get_retriever() 按 VECTOR_BACKEND 切换（FAISS / SQL+Milvus）
+│   ├── loaders.py       # 文档加载（.txt/.md/.pdf，目录递归扫描）
 │   ├── tools.py         # retrieve + calculator 工具（可扩展）
-│   ├── graph.py         # LangGraph 状态图（agent ↔ tools 循环）
+│   ├── graph.py         # LangGraph 状态图（agent ↔ tools 循环 + 多轮记忆 checkpointer）
 │   └── cli.py           # 命令行入口
-├── app/main.py          # FastAPI 服务
+├── app/main.py          # FastAPI 服务（/api/chat 同步 + /api/chat/stream 流式 + 鉴权）
 ├── data/sample.txt      # 示例知识库文档
-├── tests/test_graph.py  # 图编译校验（无需 API key）
+├── tests/               # test_graph.py（图编译）/ test_retriever.py（SQL 文档库/后端分发）
 ├── scripts/build_index.py
-├── requirements.txt
+├── requirements.txt         # 运行时依赖
+├── requirements-dev.txt     # 开发 / lint 依赖（ruff, pre-commit）
+├── requirements.milvus.txt  # 仅 VECTOR_BACKEND=milvus 时需要（pymilvus）
+├── ruff.toml
+├── .pre-commit-config.yaml
+├── Makefile
+├── docker-compose.milvus.yml # 生产化编排（Milvus standalone + 应用）
 ├── .env.example
 ├── Dockerfile
 └── README.md
@@ -48,9 +60,32 @@ python -m rag_agent.cli run "这个脚手架支持哪些工具？"
 启动 API 服务：
 
 ```bash
-uvicorn app.main:app --reload --port 8000
+make run                 # uvicorn app.main:app --reload --port 8000
+# 或手动：uvicorn app.main:app --reload --port 8000
+```
+
+同步问答（带 `session_id` 即为多轮，相同 id 自动带上历史）：
+
+```bash
 curl -X POST http://localhost:8000/api/chat \
   -H "Content-Type: application/json" \
+  -d '{"question":"如何扩展新的工具？","session_id":"u-123"}'
+```
+
+流式问答（SSE，逐字返回，以 `data: [DONE]` 结束）：
+
+```bash
+curl -N -X POST http://localhost:8000/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"question":"这个脚手架支持哪些工具？","session_id":"u-123"}'
+```
+
+开启鉴权后，每个 chat 请求需带 `X-API-Key` 头：
+
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
   -d '{"question":"如何扩展新的工具？"}'
 ```
 
@@ -120,10 +155,32 @@ pytest -q
 
 `tests/test_graph.py` 会真实构建并编译 LangGraph，**不需要任何 API key**，用于校验图结构正确。
 
+## 多轮记忆与持久化
+
+脚手架默认用 LangGraph 的 `MemorySaver` 作为 checkpointer，按 `session_id`（即 `thread_id`）保存对话历史：同一 `session_id` 的多次请求会自动带上前文，实现真正的多轮对话（`graph.py`、`app/main.py` 均透传 `session_id`）。
+
+`MemorySaver` 是进程内内存存储，重启即丢失。生产环境可换成持久化 checkpointer，例如 `langgraph-checkpoint-redis` 的 `RedisSaver`：
+
+```python
+from langgraph.checkpoint.redis import RedisSaver
+
+with RedisSaver.from_conn_info(host="localhost", port=6379, db=0) as cp:
+    cp.setup()
+    app = build_graph(checkpointer=cp)
+```
+
+只需替换 `build_graph()` 的 `checkpointer` 参数，其余代码无需改动。
+
+## 服务鉴权
+
+`app/main.py` 对所有 `/api/chat*` 接口做 `X-API-Key` 校验。开发期把 `.env` 的 `API_KEY` 留空即关闭鉴权；生产环境请设置强随机值，并在请求头携带 `X-API-Key: <你的密钥>`。
+
 ## 生产化建议
 
-- 将 API key 放入密钥管理，不要提交 `.env`
-- FAISS 适合中小规模；大规模检索可切 `VECTOR_BACKEND=milvus`，配合 SQL 文档库（见上「切换到 SQL + Milvus」）
+- 将 API key / `API_KEY` 放入密钥管理，不要提交 `.env`
+- 开启 `API_KEY` 鉴权（见上「服务鉴权」）
+- FAISS 适合中小规模；大规模检索可切 `VECTOR_BACKEND=milvus`，配合 SQL 文档库与 `docker-compose.milvus.yml`
+- 多轮记忆在生产环境换 Redis 等持久化 checkpointer（见上「多轮记忆与持久化」）
 - 给 LLM 加超时与重试；对工具输入做校验
 - CI 见 `.github/workflows/ci.yml`（推送需 PAT 带 `workflow` 权限）
 

@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     SQL_DOCSTORE_DSN: str = ""               # 如 mysql+pymysql://u:p@host:3306/rag；留空用 sqlite
     SQL_DOCSTORE_TABLE: str = "rag_chunks"
 
+    # ---- 服务鉴权 ----
+    # 留空则关闭鉴权（仅开发期）。生产请设置强随机值，并在请求头带 X-API-Key。
+    API_KEY: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

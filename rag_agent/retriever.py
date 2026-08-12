@@ -1,11 +1,9 @@
-from pathlib import Path
-from typing import List, Optional
 
-from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from rag_agent import loaders
 from rag_agent.config import settings
 from rag_agent.llm import get_embeddings
 
@@ -13,17 +11,16 @@ from rag_agent.llm import get_embeddings
 # --------------------------------------------------------------------------
 # 文档加载与切分（两种后端共用）
 # --------------------------------------------------------------------------
-def load_raw_documents() -> List[Document]:
-    data_dir = Path(settings.DATA_DIR)
-    raw: List[Document] = []
-    for path in sorted(data_dir.glob("*.txt")):
-        raw.extend(TextLoader(str(path), encoding="utf-8").load())
+def load_raw_documents(source=None) -> list[Document]:
+    """从 DATA_DIR（或指定 source）加载文档，支持 .txt/.md/.pdf。"""
+    raw = loaders.load_documents(source or settings.DATA_DIR)
     if not raw:
-        raise FileNotFoundError(f"在 {data_dir} 下未找到任何 .txt 文档")
+        target = source or settings.DATA_DIR
+        raise FileNotFoundError(f"在 {target} 下未找到任何支持的文档（.txt/.md/.pdf）")
     return raw
 
 
-def split_documents(raw_docs: List[Document]) -> List[Document]:
+def split_documents(raw_docs: list[Document]) -> list[Document]:
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     return splitter.split_documents(raw_docs)
 
@@ -34,9 +31,8 @@ def split_documents(raw_docs: List[Document]) -> List[Document]:
 # 依赖（sqlalchemy）延迟导入，默认 FAISS 路径不会触发。
 # --------------------------------------------------------------------------
 class SQLDocStore:
-    def __init__(self, dsn: Optional[str] = None, table: Optional[str] = None):
-        from sqlalchemy import (Column, Integer, MetaData, String, Table, Text,
-                                create_engine)
+    def __init__(self, dsn: str | None = None, table: str | None = None):
+        from sqlalchemy import Column, Integer, MetaData, String, Table, Text, create_engine
 
         self.dsn = dsn or settings.SQL_DOCSTORE_DSN or "sqlite:///./rag_docs.db"
         self.table_name = table or settings.SQL_DOCSTORE_TABLE
@@ -50,7 +46,7 @@ class SQLDocStore:
         )
         self.metadata.create_all(self.engine)
 
-    def save(self, chunks: List[Document]) -> None:
+    def save(self, chunks: list[Document]) -> None:
         from sqlalchemy import insert
 
         rows = [
@@ -61,7 +57,7 @@ class SQLDocStore:
         with self.engine.begin() as conn:
             conn.execute(insert(self.table), rows)
 
-    def get(self, ids: List[int]) -> List[Document]:
+    def get(self, ids: list[int]) -> list[Document]:
         from sqlalchemy import select
 
         with self.engine.connect() as conn:
@@ -89,7 +85,7 @@ class SQLDocStore:
 # --------------------------------------------------------------------------
 # FAISS 后端（默认）：向量与文本都在本地，零外部服务
 # --------------------------------------------------------------------------
-def build_faiss_index(chunks: List[Document]) -> FAISS:
+def build_faiss_index(chunks: list[Document]) -> FAISS:
     embeddings = get_embeddings()
     vectorstore = FAISS.from_documents(chunks, embeddings)
     vectorstore.save_local(settings.INDEX_PATH)
@@ -115,9 +111,9 @@ def _milvus_client():
     return MilvusClient(uri=settings.MILVUS_URI)
 
 
-def build_milvus_index(chunks: List[Document],
-                       docstore: Optional[SQLDocStore] = None):
-    from pymilvus import (CollectionSchema, DataType, FieldSchema, MilvusClient)
+def build_milvus_index(chunks: list[Document],
+                       docstore: SQLDocStore | None = None):
+    from pymilvus import CollectionSchema, DataType, FieldSchema, MilvusClient
 
     embeddings = get_embeddings()
     dim = len(embeddings.embed_query("dimension-probe"))
@@ -158,7 +154,7 @@ class MilvusRetriever:
         self.docstore = docstore
         self.top_k = settings.RETRIEVER_TOP_K
 
-    def invoke(self, query: str) -> List[Document]:
+    def invoke(self, query: str) -> list[Document]:
         vector = self.embeddings.embed_query(query)
         hits = self.client.search(
             collection_name=self.collection, data=[vector],
@@ -173,9 +169,13 @@ class MilvusRetriever:
 # --------------------------------------------------------------------------
 # 统一入口：根据配置选择后端
 # --------------------------------------------------------------------------
-def build_index() -> None:
-    """根据 VECTOR_BACKEND 构建索引；SQL 文档库按需启用。"""
-    chunks = split_documents(load_raw_documents())
+def build_index(source=None) -> None:
+    """根据 VECTOR_BACKEND 构建索引；SQL 文档库按需启用。
+
+    Args:
+        source: 可选，文档来源（文件路径或目录）；默认用 settings.DATA_DIR。
+    """
+    chunks = split_documents(load_raw_documents(source))
 
     if settings.VECTOR_BACKEND == "milvus":
         if not settings.SQL_DOCSTORE_ENABLED:

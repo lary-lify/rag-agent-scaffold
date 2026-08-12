@@ -1,0 +1,72 @@
+# 生产化编排：Milvus standalone（etcd + minio + milvus）+ 应用服务。
+# 向量存 Milvus，文本/元数据默认存本地 SQLite（SQL_DOCSTORE_DSN 留空）。
+#
+# 使用：
+#   cp configs/.env.dual-backend.example .env   # 保留「后端 B」段，填 OPENAI_API_KEY
+#   export OPENAI_API_KEY=sk-xxx                  # 注入到 app 容器
+#   docker compose -f docker-compose.milvus.yml up --build
+#   # 等 milvus 健康（http://localhost:19530 可连）后，在容器/本地构建一次索引：
+#   docker compose -f docker-compose.milvus.yml exec app \
+#       python -m rag_agent.cli build-index
+#   # 访问 API：http://localhost:8000/docs
+version: "3.5"
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - ./volumes/etcd:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - ./volumes/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus:
+    image: milvusdb/milvus:v2.4.13
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - ./volumes/milvus:/var/lib/milvus
+    ports:
+      - "19530:19530"
+    depends_on:
+      - etcd
+      - minio
+
+  app:
+    build: .
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      VECTOR_BACKEND: milvus
+      MILVUS_URI: http://milvus:19530
+      MILVUS_COLLECTION: rag_chunks
+      SQL_DOCSTORE_ENABLED: "true"
+      SQL_DOCSTORE_DSN: ""            # 留空用本地 SQLite；也可填 mysql+pymysql://...
+      SQL_DOCSTORE_TABLE: rag_chunks
+    ports:
+      - "8000:8000"
+    depends_on:
+      - milvus

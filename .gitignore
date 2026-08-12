@@ -4,11 +4,21 @@ __pycache__/
 .venv/
 venv/
 .env
+# 数据库 / 向量库产物
+*.db
+index/
+# docker-compose.milvus.yml 挂载卷
+volumes/
 # FAISS 索引产物
 index.faiss
 index.pkl
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .idea/
 .vscode/
 .DS_Store
+
+# 临时/产物 venv（验证用）
+.venv_new/
+.venv_313/

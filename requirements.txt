@@ -5,6 +5,7 @@ langchain-community>=0.3.0
 langchain-text-splitters>=0.3.0
 faiss-cpu>=1.8.0
 tiktoken>=0.7.0
+pypdf>=4.0                   # PDF 文档加载（rag_agent/loaders.py）
 python-dotenv>=1.0.0
 pydantic>=2.6.0
 pydantic-settings>=2.2.0
