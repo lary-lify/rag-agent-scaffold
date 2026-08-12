@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+# FAISS 索引产物
+index.faiss
+index.pkl
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/
+.DS_Store
