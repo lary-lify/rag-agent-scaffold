@@ -107,6 +107,8 @@ python -m rag_agent.cli run "这个脚手架支持哪些工具？"
 ```
 
 > 注意：`VECTOR_BACKEND=milvus` **必须与** `SQL_DOCSTORE_ENABLED=true` 配合使用——Milvus 只存向量，文本由 SQL 提供，二者按 `id` 关联。若只设 milvus 不启用 SQL，`build_index()` / `get_retriever()` 会直接报错提示。
+
+开箱即用：根目录 `.env.example` 仅含默认（FAISS）配置；`configs/.env.dual-backend.example` 把 **FAISS 与 SQL + Milvus 两种后端** 写在同一份文件里（各为一段完整可复制配置），复制为 `.env` 后按需保留一段即可。
 - **加节点**：在 `graph.py` 的 `StateGraph` 中 `add_node` / `add_edge`，例如插入一个「重写查询」或「答案校验」节点。
 
 ## 测试
