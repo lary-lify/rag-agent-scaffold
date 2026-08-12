@@ -101,7 +101,8 @@ SQL_DOCSTORE_TABLE=rag_chunks
 ### 安装与构建
 
 ```bash
-pip install sqlalchemy pymilvus        # 默认 requirements.txt 已包含，但可按需精简
+pip install -r requirements.txt                 # 默认：含 sqlalchemy（SQL 文档库），不含 pymilvus
+pip install -r requirements.milvus.txt          # 仅当 VECTOR_BACKEND=milvus 时额外安装
 python -m rag_agent.cli build-index    # 按 VECTOR_BACKEND 构建（向量→Milvus，文本→SQL）
 python -m rag_agent.cli run "这个脚手架支持哪些工具？"
 ```
