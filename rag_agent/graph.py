@@ -7,17 +7,20 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from rag_agent.llm import get_chat_model
 from rag_agent.tools import TOOLS
 
-_model = get_chat_model().bind_tools(TOOLS)
-
 # In-process checkpointer: keeps per-session conversation history keyed by
 # thread_id. Swap for a persistent checkpointer (e.g. RedisSaver) in production
 # so sessions survive process restarts.
 _checkpointer = MemorySaver()
 
 
+def _get_model():
+    """延迟构造 LLM：仅在图真正运行时才需要 API key，导入期不触碰凭据。"""
+    return get_chat_model().bind_tools(TOOLS)
+
+
 def _agent(state: MessagesState):
     """LLM 节点：根据历史消息（及已绑定工具）决定下一步——直接回答或调用工具。"""
-    response = _model.invoke(state["messages"])
+    response = _get_model().invoke(state["messages"])
     return {"messages": [response]}
 
 
